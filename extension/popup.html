@@ -37,7 +37,8 @@
     <div><b>Pairing</b> <span id="tokenState" class="muted"></span></div>
     <div class="muted">Automatic once <code>python native/install.py</code> has run. Otherwise paste the output of <code>python server/bridge.py --token</code>:</div>
     <input type="password" id="token" placeholder="paste token">
-    <button id="saveToken">Save</button>
+    <button id="saveToken">Save</button> <button id="pairNow" title="Ask the native host for the token now">Pair automatically</button>
+    <div id="nativeError" class="bad"></div>
   </section>
   <section>
     <div><b>Allowed sites</b> <span id="allowState" class="muted"></span></div>

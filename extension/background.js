@@ -35,18 +35,24 @@ async function loadSettings() {
 // Native messaging: Firefox launches native/host.py (registered by native/install.py, allowed
 // only for this extension's ID), which reads ~/.claude-browser-bridge/token. No pasting needed.
 let lastNativeTry = 0;
-async function tokenFromNativeHost() {
-  if (Date.now() - lastNativeTry < 30000) return false;
+let nativeError = null;       // shown in the popup when automatic pairing fails
+async function tokenFromNativeHost({ force = false } = {}) {
+  if (!force && Date.now() - lastNativeTry < 30000) return false;
   lastNativeTry = Date.now();
   try {
     const r = await browser.runtime.sendNativeMessage("claude_browser_bridge", { type: "token" });
-    if (!r?.token || r.token === settings.token) return false;
+    if (!r?.token) { nativeError = r?.error || "native host replied without a token"; return false; }
+    nativeError = null;
+    if (r.token === settings.token) return false;
     settings.token = r.token;
     settings.tokenSource = "native";
     await browser.storage.local.set({ token: r.token, tokenSource: "native" });
+    updateBadge();
     return true;
-  } catch {
-    return false; // host not installed: fall back to the pasted token
+  } catch (e) {
+    // Usually "host not installed" (run native/install.py); fall back to a pasted token.
+    nativeError = String(e?.message || e);
+    return false;
   }
 }
 
@@ -74,6 +80,8 @@ function updateBadge() {
 async function pollLoop(port) {
   const base = `http://127.0.0.1:${port}`;
   for (;;) {
+    // Unpaired: keep retrying the native host (throttled to every 30 s) instead of giving up after startup.
+    if (!settings.token && !settings.paused && port === PORTS[0]) await tokenFromNativeHost();
     if (!settings.token || settings.paused) { setSession(port, { up: false }); await sleep(1500); continue; }
     let r;
     try {
@@ -432,7 +440,11 @@ browser.runtime.onMessage.addListener(async (msg) => {
   if (msg.type === "state") {
     const view = {};
     for (const [port, s] of Object.entries(sessions)) view[port] = { ...s, disconnected: cutPids.has(s.pid) };
-    return { settings, sessions: view, activity };
+    return { settings, sessions: view, activity, nativeError };
+  }
+  if (msg.type === "pairNow") {
+    const changed = await tokenFromNativeHost({ force: true });
+    return { ok: !!settings.token && !nativeError, changed, error: nativeError };
   }
   if (msg.type === "disconnect" || msg.type === "reconnect") {
     const pid = sessions[msg.port]?.pid;

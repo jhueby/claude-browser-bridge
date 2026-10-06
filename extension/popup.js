@@ -86,7 +86,9 @@ async function act(type, port) {
 }
 
 async function render(first) {
-  const { settings, sessions, activity } = await browser.runtime.sendMessage({ type: "state" });
+  const { settings, sessions, activity, nativeError } = await browser.runtime.sendMessage({ type: "state" });
+  $("nativeError").textContent = nativeError && settings.tokenSource !== "manual"
+    ? `Automatic pairing failed: ${nativeError}. Run python native/install.py, then click Pair automatically.` : "";
   if (first) {
     $("paused").checked = settings.paused;
     $("readOnly").checked = settings.readOnly;
@@ -114,6 +116,7 @@ async function render(first) {
 
 $("paused").onchange = (e) => save({ paused: e.target.checked });
 $("readOnly").onchange = (e) => save({ readOnly: e.target.checked });
+$("pairNow").onclick = async () => { await browser.runtime.sendMessage({ type: "pairNow" }); render(); };
 $("saveToken").onclick = async () => { await save({ token: $("token").value.trim(), tokenSource: "manual" }); $("token").value = ""; render(); };
 const lines = (id) => $(id).value.split("\n").map((s) => s.trim()).filter(Boolean);
 $("saveBlocked").onclick = () => save({ blocked: lines("blocked") }).then(() => render());
