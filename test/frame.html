@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Frame</title></head>
+<body style="margin:4px; font:13px sans-serif">
+  <label id="lbl" for="ff">Field</label> <input id="ff">
+  <button id="fb">Frame button</button> <span id="fout"></span>
+  <script>
+    // ?name=same|cross|leaf labels this frame; ?nest=1 embeds one more (same-origin) frame inside it.
+    const p = new URLSearchParams(location.search);
+    const name = p.get("name") || "leaf";
+    document.title = "Frame " + name;
+    document.getElementById("lbl").textContent = "Field " + name;
+    const b = document.getElementById("fb");
+    b.textContent = "Frame button " + name;
+    let n = 0;
+    b.onclick = () => { document.getElementById("fout").textContent = name + " clicked " + (++n); console.log("frame " + name + " click " + n); };
+    if (p.get("nest")) {
+      const f = document.createElement("iframe");
+      f.title = "Leaf frame";
+      f.src = "/frame.html?name=leaf";
+      f.width = 360; f.height = 70;
+      document.body.append(document.createElement("br"), f);
+    }
+  </script>
+</body>
+</html>

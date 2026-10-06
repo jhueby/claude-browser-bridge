@@ -9,7 +9,7 @@ It's a small clean-room rewrite of the idea behind `nanogenomic/ClaudeCodeBrowse
 | Server | one Python file, **stdlib only** (no `pip install`) |
 | Extension | ~800 lines of plain JS, no build step, no bundled libraries |
 | Network | `127.0.0.1` only; no remote endpoints, telemetry, or auto-update URL |
-| Page access | scripts are injected **on demand** into the one tab being driven, not into every frame of every page |
+| Page access | scripts are injected **on demand**, only into the tab (and the iframes in it) being driven, never as a standing script in every page |
 | Guard rails | pause switch, read-only mode, site allowlist + blocklist, per-session disconnect/kill, refuses password fields, local audit log |
 
 See [SECURITY.md](SECURITY.md) for the threat model.
@@ -30,12 +30,12 @@ Each Claude Code session spawns its own `bridge.py`, which binds the first free 
 | `navigate` | goto / back / forward / reload (`hard` bypasses cache) |
 | `reload_matching` | reload every tab whose URL contains a string (restart a dev server, refresh its tabs) |
 | `screenshot` | visible area as an image (downscaled JPEG by default), also saved to disk |
-| `snapshot` | page outline: headings plus every visible interactive element with a ref like `[e7] button "Save"` |
-| `find`, `get_text` | locate elements by text or CSS; read visible text |
-| `click`, `type`, `press_key`, `select_option`, `hover`, `scroll` | act on a ref, selector, text, or screenshot coordinate |
+| `snapshot` | page outline: headings plus every visible interactive element with a ref like `[e7] button "Save"`; iframes are nested inline (`[frame f12] …`, refs like `f12:e3`), and shadow DOM is included |
+| `find`, `get_text` | locate elements by text or CSS, across the page and its iframes; read visible text |
+| `click`, `type`, `press_key`, `select_option`, `hover`, `scroll` | act on a ref, selector, text, or screenshot coordinate; a ref carries its frame, and text/selector targets missing from the top page are looked up in iframes |
 | `wait_for` | wait for a selector or text to appear or disappear |
-| `evaluate` | run JS in the page's main world (expression or function body, `await` allowed) |
-| `logs_start`, `logs_read` | capture console messages and fetch/XHR traffic in a tab |
+| `evaluate` | run JS in the page's main world, or in one iframe with `frame` (expression or function body, `await` allowed) |
+| `logs_start`, `logs_read` | capture console messages and fetch/XHR traffic in a tab or one of its iframes |
 | `bridge_status` | connection state and file locations |
 
 ## Install
@@ -95,7 +95,8 @@ Site patterns are hostnames, one per line: `example.com` also covers its subdoma
 ## Limitations
 
 - Input events are synthetic (`isTrusted=false`). Most sites accept them; a few anti-bot checks and some drag-and-drop UIs won't.
-- Only the top frame is scripted. Content inside iframes, including cross-origin embeds, is out of reach.
+- Iframes, including cross-origin ones, are reachable, but site rules apply to **each frame's own URL**. A frame from a blocked or off-allowlist host shows as `[frame fN] hidden by site rules` and refuses every tool, even when the page around it is allowed. `about:blank`/`srcdoc` frames are judged by their parent's URL. Sandboxed frames that refuse script injection are reported as unreadable. Snapshots expand frames up to 4 levels deep.
+- Shadow DOM is walked automatically, including **closed** shadow roots (Firefox exposes them to extensions).
 - `evaluate` follows the page's Content-Security-Policy, so it fails on sites that forbid `unsafe-eval`.
 - Console and network capture is in-page (it patches `console`, `fetch`, and `XHR`) and resets on navigation.
 - Screenshots cover the visible area only, and the tab is brought to the front to take one.

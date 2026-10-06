@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 PORT_RANGE = range(int(os.environ.get("BRIDGE_PORT_START", "8777")), int(os.environ.get("BRIDGE_PORT_START", "8777")) + 10)
 HOME = Path(os.environ.get("BRIDGE_HOME", Path.home() / ".claude-browser-bridge"))
 TOKEN_FILE = HOME / "token"
@@ -287,10 +287,12 @@ def _obj(props: dict, required: list[str] | None = None) -> dict:
 
 TAB = {"tab_id": {"type": "integer", "description": "Tab id from tabs_list. Defaults to the active tab of the focused window."}}
 TARGET = {
-    "ref": {"type": "string", "description": "Element ref from snapshot/find, e.g. 'e12'."},
+    "ref": {"type": "string", "description": "Element ref from snapshot/find, e.g. 'e12', or 'f23:e7' for an element inside iframe f23."},
     "selector": {"type": "string", "description": "CSS selector."},
     "text": {"type": "string", "description": "Visible text of the element (exact match preferred, then substring)."},
 }
+
+FRAME = {"frame": {"type": "string", "description": "Iframe to act in, e.g. 'f23' from snapshot. Optional: refs already carry their frame, and selector/text targets not found in the top page are searched for in iframes."}}
 
 TOOLS: list[dict] = [
     {"name": "tabs_list", "description": "List open Firefox tabs (id, title, url, active, window).",
@@ -309,41 +311,42 @@ TOOLS: list[dict] = [
      "inputSchema": _obj({**TAB, "max_width": {"type": "integer", "default": 1280},
                           "format": {"type": "string", "enum": ["jpeg", "png"], "default": "jpeg"},
                           "save": {"type": "boolean", "default": True}})},
-    {"name": "snapshot", "description": "Outline of the page: headings and every visible interactive element with a ref (e.g. [e7] button \"Save\"). Use refs with click/type/etc.",
-     "inputSchema": _obj({**TAB, "max_items": {"type": "integer", "default": 300}})},
+    {"name": "snapshot", "description": "Outline of the page: headings and every visible interactive element with a ref (e.g. [e7] button \"Save\"), including inside iframes (nested under [frame fN], refs like fN:e3) and shadow DOM. Use refs with click/type/etc.",
+     "inputSchema": _obj({**TAB, **FRAME, "max_items": {"type": "integer", "default": 300},
+                          "include_frames": {"type": "boolean", "default": True, "description": "Expand iframes inline."}})},
     {"name": "get_text", "description": "Visible text of the page or of one element.",
-     "inputSchema": _obj({**TAB, **TARGET, "max_chars": {"type": "integer", "default": 20000}})},
-    {"name": "find", "description": "Find elements by visible text or CSS selector; returns refs.",
-     "inputSchema": _obj({**TAB, "query": {"type": "string", "description": "Text to look for, or CSS selector if css=true."},
+     "inputSchema": _obj({**TAB, **TARGET, **FRAME, "max_chars": {"type": "integer", "default": 20000}})},
+    {"name": "find", "description": "Find elements by visible text or CSS selector, in the page and its iframes; returns refs.",
+     "inputSchema": _obj({**TAB, **FRAME, "query": {"type": "string", "description": "Text to look for, or CSS selector if css=true."},
                           "css": {"type": "boolean", "default": False}, "limit": {"type": "integer", "default": 20}}, ["query"])},
-    {"name": "click", "description": "Click an element (by ref, selector, or text), or at x/y given in pixels of the most recent screenshot of that tab.",
-     "inputSchema": _obj({**TAB, **TARGET, "x": {"type": "number"}, "y": {"type": "number"},
+    {"name": "click", "description": "Click an element (by ref, selector, or text), or at x/y given in pixels of the most recent screenshot of that tab (clicks pass into iframes; with `frame`, x/y are CSS pixels in that frame).",
+     "inputSchema": _obj({**TAB, **TARGET, **FRAME, "x": {"type": "number"}, "y": {"type": "number"},
                           "double": {"type": "boolean", "default": False}})},
     {"name": "type", "description": "Type text into an input, textarea, or contenteditable. Refuses password fields.",
-     "inputSchema": _obj({**TAB, "ref": TARGET["ref"], "selector": TARGET["selector"],
+     "inputSchema": _obj({**TAB, **FRAME, "ref": TARGET["ref"], "selector": TARGET["selector"],
                           "text": {"type": "string", "description": "Text to enter."},
                           "clear": {"type": "boolean", "default": True},
                           "submit": {"type": "boolean", "default": False, "description": "Submit the enclosing form / press Enter afterwards."}},
                          ["text"])},
     {"name": "press_key", "description": "Send a key (Enter, Escape, Tab, ArrowDown, a, ...) to the focused element or a target.",
-     "inputSchema": _obj({**TAB, "key": {"type": "string"}, "ref": TARGET["ref"], "selector": TARGET["selector"]}, ["key"])},
+     "inputSchema": _obj({**TAB, **FRAME, "key": {"type": "string"}, "ref": TARGET["ref"], "selector": TARGET["selector"]}, ["key"])},
     {"name": "select_option", "description": "Choose an option in a <select> by value or visible label.",
-     "inputSchema": _obj({**TAB, "ref": TARGET["ref"], "selector": TARGET["selector"], "option": {"type": "string"}}, ["option"])},
+     "inputSchema": _obj({**TAB, **FRAME, "ref": TARGET["ref"], "selector": TARGET["selector"], "option": {"type": "string"}}, ["option"])},
     {"name": "hover", "description": "Move the (synthetic) pointer over an element.",
-     "inputSchema": _obj({**TAB, **TARGET})},
+     "inputSchema": _obj({**TAB, **TARGET, **FRAME})},
     {"name": "scroll", "description": "Scroll the page by a number of pixels, to top/bottom, or until an element is in view.",
-     "inputSchema": _obj({**TAB, **TARGET, "dy": {"type": "number", "description": "Pixels; negative scrolls up."},
+     "inputSchema": _obj({**TAB, **TARGET, **FRAME, "dy": {"type": "number", "description": "Pixels; negative scrolls up."},
                           "to": {"type": "string", "enum": ["top", "bottom"]}})},
     {"name": "wait_for", "description": "Wait until a selector or text appears (or disappears with gone=true).",
-     "inputSchema": _obj({**TAB, "selector": TARGET["selector"], "text": TARGET["text"],
+     "inputSchema": _obj({**TAB, **FRAME, "selector": TARGET["selector"], "text": TARGET["text"],
                           "gone": {"type": "boolean", "default": False},
                           "timeout_ms": {"type": "integer", "default": 10000}})},
     {"name": "evaluate", "description": "Run JavaScript in the page (main world). Expression or function body; may use await; return value is JSON-serialised. Subject to the page's CSP.",
-     "inputSchema": _obj({**TAB, "code": {"type": "string"}}, ["code"])},
-    {"name": "logs_start", "description": "Start capturing console messages and fetch/XHR requests in a tab (resets on navigation).",
-     "inputSchema": _obj(TAB)},
+     "inputSchema": _obj({**TAB, **FRAME, "code": {"type": "string"}}, ["code"])},
+    {"name": "logs_start", "description": "Start capturing console messages and fetch/XHR requests in a tab or one of its iframes (resets on navigation).",
+     "inputSchema": _obj({**TAB, **FRAME})},
     {"name": "logs_read", "description": "Return captured console/network entries.",
-     "inputSchema": _obj({**TAB, "kind": {"type": "string", "enum": ["all", "console", "network"], "default": "all"},
+     "inputSchema": _obj({**TAB, **FRAME, "kind": {"type": "string", "enum": ["all", "console", "network"], "default": "all"},
                           "errors_only": {"type": "boolean", "default": False},
                           "clear": {"type": "boolean", "default": False}})},
     {"name": "bridge_status", "description": "Show whether a browser is connected to this bridge, its port, and file locations.",
@@ -378,8 +381,8 @@ def run_tool(name: str, args: dict) -> list[dict]:
         parts.append(text(json.dumps(meta)))
         return parts
 
-    if isinstance(result, dict) and set(result) == {"text"}:
-        return [text(result["text"])]
+    if isinstance(result, dict) and "text" in result and set(result) <= {"text", "frame"}:
+        return [text((f"[in frame {result['frame']}]\n" if result.get("frame") else "") + result["text"])]
     return [text(json.dumps(result, indent=2, ensure_ascii=False))]
 
 

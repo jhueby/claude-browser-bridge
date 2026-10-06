@@ -15,5 +15,23 @@
   <a href="/page.html?second=1">Second page</a>
   <a id="other" href="#">Other host</a>
   <script>document.getElementById("other").href = location.href.replace("127.0.0.1", "localhost").split("?")[0];</script>
+  <div>
+    <iframe id="same" title="Same origin frame" src="/frame.html?name=same" width="420" height="60"></iframe>
+    <!-- cross-origin: same server, but "localhost" vs "127.0.0.1" -->
+    <iframe id="cross" title="Cross origin frame" width="420" height="140"></iframe>
+    <script>document.getElementById("cross").src = location.origin.replace("127.0.0.1", "localhost") + "/frame.html?name=cross&nest=1";</script>
+  </div>
+  <my-widget></my-widget>
+  <script>
+    // A web component with a CLOSED shadow root: page scripts can't see inside it.
+    customElements.define("my-widget", class extends HTMLElement {
+      constructor() {
+        super();
+        const r = this.attachShadow({ mode: "closed" });
+        r.innerHTML = '<button id="sb">Shadow button</button> <span id="sout"></span>';
+        r.getElementById("sb").onclick = () => { r.getElementById("sout").textContent = "shadow clicked"; };
+      }
+    });
+  </script>
 </body>
 </html>

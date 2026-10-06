@@ -8,8 +8,60 @@
   if (window.__cbbAgent) return;
 
   let counter = 0;
+  let PREFIX = "";                  // "f23:" when this agent runs inside iframe 23; set per call
   const byRef = new Map();          // "e12" -> WeakRef(Element)
   const refOfEl = new WeakMap();    // Element -> "e12"
+
+  // Shadow DOM: Firefox gives extension content scripts openOrClosedShadowRoot, so even closed
+  // shadow roots (common in web components) are reachable. Page scripts can't do this.
+  const shadowOf = (el) => el.openOrClosedShadowRoot || el.shadowRoot || null;
+
+  // All elements matching `selector` in tree order, descending into shadow roots.
+  function deepAll(selector, root = document) {
+    const out = [];
+    const walk = (r) => {
+      for (const el of r.querySelectorAll("*")) {
+        if (el.matches(selector)) out.push(el);
+        const sr = shadowOf(el);
+        if (sr) walk(sr);
+      }
+    };
+    walk(root);
+    return out;
+  }
+
+  function deepQuery(selector) {
+    const direct = document.querySelector(selector);
+    return direct || deepAll(selector)[0] || null;
+  }
+
+  // elementFromPoint stops at shadow hosts; keep drilling into their shadow roots.
+  function deepElementFromPoint(x, y) {
+    let el = document.elementFromPoint(x, y);
+    for (let i = 0; el && i < 20; i++) {
+      const sr = shadowOf(el);
+      const inner = sr?.elementFromPoint?.(x, y);
+      if (!inner || inner === el) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  // Focused element, following focus into shadow roots.
+  function deepActive() {
+    let el = document.activeElement;
+    for (let i = 0; el && i < 20; i++) {
+      const inner = shadowOf(el)?.activeElement;
+      if (!inner) break;
+      el = inner;
+    }
+    return el;
+  }
+
+  const isFrame = (el) => el.tagName === "IFRAME" || el.tagName === "FRAME";
+  const frameIdOf = (el) => {
+    try { return browser.runtime.getFrameId(el); } catch { return -1; }
+  };
 
   const INTERACTIVE = [
     "a[href]", "button", "input:not([type=hidden])", "select", "textarea", "summary",
@@ -85,8 +137,13 @@
   }
 
   function describe(el) {
+    if (isFrame(el)) {
+      const label = clean(el.getAttribute("title") || el.getAttribute("name") || el.getAttribute("aria-label") || "", 60);
+      const src = clean(el.getAttribute("src") || (el.hasAttribute("srcdoc") ? "(srcdoc)" : ""), 80);
+      return `[${PREFIX}${ref(el)}] iframe${label ? ` "${label}"` : ""}${src ? ` → ${src}` : ""}${inViewport(el) ? "" : " (offscreen)"}`;
+    }
     const r = role(el);
-    let line = `[${ref(el)}] ${r}`;
+    let line = `[${PREFIX}${ref(el)}] ${r}`;
     if (r === "heading") line += ` h${el.tagName[1]}`;
     const n = name(el);
     if (n) line += ` "${n}"`;
@@ -110,6 +167,7 @@
   }
 
   function fromRef(r) {
+    r = String(r).replace(/^f\d+:/, "");
     const el = byRef.get(r)?.deref();
     if (!el || !el.isConnected) throw new Error(`ref ${r} is stale or unknown — take a new snapshot`);
     return el;
@@ -117,14 +175,14 @@
 
   function byText(query, pool) {
     const q = query.trim().toLowerCase();
-    const cands = pool || [...document.querySelectorAll(INTERACTIVE)].filter(visible);
+    const cands = pool || deepAll(INTERACTIVE).filter(visible);
     const exact = cands.filter((el) => name(el).toLowerCase() === q);
     if (exact.length) return exact;
     const partial = cands.filter((el) => name(el).toLowerCase().includes(q));
     if (partial.length || pool) return partial;
     // fall back to the deepest visible element of any kind containing the text
-    const all = [...document.body.querySelectorAll("*")].filter(
-      (el) => el.innerText && el.innerText.toLowerCase().includes(q) && visible(el)
+    const all = deepAll("*").filter(
+      (el) => !isFrame(el) && el.innerText && el.innerText.toLowerCase().includes(q) && visible(el)
     );
     return all.filter((el) => !all.some((o) => o !== el && el.contains(o)));
   }
@@ -132,7 +190,7 @@
   function resolve(a, { optional = false } = {}) {
     if (a.ref) return fromRef(a.ref);
     if (a.selector) {
-      const el = document.querySelector(a.selector);
+      const el = deepQuery(a.selector);
       if (!el) throw new Error(`no element matches selector ${a.selector}`);
       return el;
     }
@@ -226,18 +284,26 @@
   const ops = {
     viewport: () => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio, scrollY }),
 
+    // Returns this frame's outline plus where each child iframe sits in it; background.js
+    // stitches child frames' outlines in under their iframe lines.
     snapshot({ max_items = 300 }) {
-      const els = [...document.querySelectorAll(`${HEADINGS},${INTERACTIVE}`)].filter(visible);
+      const els = deepAll(`${HEADINGS},${INTERACTIVE},iframe,frame`).filter(visible);
       const lines = [];
+      const frames = [];
       for (const el of els) {
         if (lines.length >= max_items) { lines.push(`… ${els.length - max_items} more (raise max_items or use find)`); break; }
+        if (isFrame(el)) {
+          lines.push(describe(el));
+          frames.push({ after: lines.length - 1, frameId: frameIdOf(el), src: el.getAttribute("src") || "" });
+          continue;
+        }
         // skip elements nested inside another interactive element we already listed (e.g. span[tabindex] in a button)
         const parent = el.parentElement?.closest(INTERACTIVE);
         if (parent && refOfEl.has(parent) && !el.matches("input,select,textarea")) continue;
         lines.push(describe(el));
       }
-      const head = `${document.title}\n${location.href}\nviewport ${innerWidth}x${innerHeight}, scrolled ${Math.round(scrollY)}/${Math.max(0, document.documentElement.scrollHeight - innerHeight)}\n`;
-      return { text: head + lines.join("\n") };
+      const head = `${document.title}\n${location.href}\nviewport ${innerWidth}x${innerHeight}, scrolled ${Math.round(scrollY)}/${Math.max(0, document.documentElement.scrollHeight - innerHeight)}`;
+      return { head, lines, frames };
     },
 
     get_text(a) {
@@ -248,17 +314,22 @@
     },
 
     find({ query, css = false, limit = 20 }) {
-      const hits = css ? [...document.querySelectorAll(query)] : byText(query);
+      const hits = css ? deepAll(query) : byText(query);
       const lines = hits.slice(0, limit).map(describe);
-      if (!lines.length) return { text: `no matches for ${css ? "selector" : "text"} "${query}"` };
-      if (hits.length > limit) lines.push(`… ${hits.length - limit} more`);
-      return { text: lines.join("\n") };
+      return { lines, more: Math.max(0, hits.length - limit) };
     },
 
     click(a) {
       if (a.x != null && a.y != null && !a.ref && !a.selector && !a.text) {
-        const el = document.elementFromPoint(a.x, a.y);
+        const el = deepElementFromPoint(a.x, a.y);
         if (!el) throw new Error(`nothing at (${a.x}, ${a.y})`);
+        if (isFrame(el)) {
+          // Hand the click to the frame, in the frame's own viewport coordinates.
+          const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+          return { descend: { frameId: frameIdOf(el),
+            x: a.x - r.left - el.clientLeft - parseFloat(cs.paddingLeft || 0),
+            y: a.y - r.top - el.clientTop - parseFloat(cs.paddingTop || 0) } };
+        }
         click(el, a.x, a.y, a.double);
         return { clicked: describe(el.closest(INTERACTIVE) || el), at: [a.x, a.y] };
       }
@@ -269,8 +340,9 @@
     },
 
     type(a) {
-      const el = resolve(a, { optional: true }) || document.activeElement;
+      const el = resolve(a, { optional: true }) || deepActive();
       if (!el || el === document.body) throw new Error("no target and nothing is focused");
+      if (isFrame(el) && !a.ref && !a.selector) return { focusIn: frameIdOf(el) };
       if (el.tagName === "INPUT" && el.type === "password")
         throw new Error("Refusing to type into a password field. Ask the user to enter it themselves.");
       if (!editable(el)) throw new Error(`${describe(el)} is not a text field`);
@@ -294,7 +366,8 @@
     },
 
     press_key(a) {
-      const el = resolve(a, { optional: true }) || document.activeElement || document.body;
+      const el = resolve(a, { optional: true }) || deepActive() || document.body;
+      if (isFrame(el) && !a.ref && !a.selector) return { focusIn: frameIdOf(el) };
       if (a.ref || a.selector) el.focus?.();
       return { key: a.key, target: describe(el), effect: key(el, a.key), note: "synthetic event (isTrusted=false)" };
     },
@@ -337,8 +410,9 @@
       if (!a.selector && !a.text) throw new Error("give a selector or text");
       const deadline = Date.now() + (a.timeout_ms ?? 10000);
       const check = () => {
-        if (a.selector) { const el = document.querySelector(a.selector); return el && visible(el) ? el : null; }
-        return document.body.innerText.toLowerCase().includes(a.text.toLowerCase()) ? (byText(a.text)[0] || document.body) : null;
+        if (a.selector) { const el = deepQuery(a.selector); return el && visible(el) ? el : null; }
+        if (document.body.innerText.toLowerCase().includes(a.text.toLowerCase())) return byText(a.text)[0] || document.body;
+        return byText(a.text)[0] || null; // text inside shadow roots isn't in body.innerText
       };
       const t0 = Date.now();
       while (Date.now() < deadline) {
@@ -351,6 +425,7 @@
   };
 
   window.__cbbAgent = async (op, args) => {
+    PREFIX = args?.prefix || "";
     try {
       if (!ops[op]) throw new Error(`unknown op ${op}`);
       return { ok: true, value: await ops[op](args || {}) };

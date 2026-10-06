@@ -272,6 +272,74 @@ try:
     err, out = call("screenshot", tab_id=tab_id, max_width=800)
     check("screenshot returns image + saves", not err and "<image image/jpeg" in out and "saved_to" in out, out)
 
+    # ---- iframes (same-origin, cross-origin, nested) and closed shadow DOM ----
+    import re
+    err, snap = call("snapshot", tab_id=tab_id)
+    print(snap)
+
+    def ref_for(label, text=snap):
+        m = re.search(r"\[((?:f\d+:)?e\d+)\][^\n]*" + re.escape(label), text)
+        return m.group(1) if m else None
+
+    def frame_of(label, text=snap):
+        r = ref_for(label, text)
+        return r.split(":")[0] if r and ":" in r else None
+
+    check("snapshot shows shadow DOM button", 'button "Shadow button"' in snap, snap)
+    if opts.allowlist:
+        check("allowlist: same-origin frame expanded", 'button "Frame button same"' in snap, snap)
+        check("allowlist: cross-origin (off-list) frame hidden", "hidden by site rules" in snap
+              and "Frame button cross" not in snap and "Frame button leaf" not in snap, snap)
+        hidden = re.search(r"\[frame (f\d+)\] hidden by site rules", snap)
+        err, out = call("click", tab_id=tab_id, text="Frame button cross")
+        check("allowlist: text search skips off-list frames", err and "no visible element" in out, out)
+        err, out = call("get_text", tab_id=tab_id, frame=hidden.group(1) if hidden else "f999999")
+        check("allowlist: explicit off-list frame refused", err and "allowlist" in out, out)
+    else:
+        check("snapshot expands same-origin iframe", 'button "Frame button same"' in snap, snap)
+        check("snapshot expands cross-origin iframe", 'button "Frame button cross"' in snap, snap)
+        check("snapshot expands nested iframe", 'button "Frame button leaf"' in snap, snap)
+        check("frame refs are prefixed", bool(re.search(r"\[f\d+:e\d+\] button \"Frame button cross\"", snap)), snap)
+
+        cref = ref_for('button "Frame button cross"')
+        err, out = call("click", tab_id=tab_id, ref=cref)
+        check("click by frame ref (cross-origin)", not err and "Frame button cross" in out, out)
+        err, out = call("get_text", tab_id=tab_id, frame=frame_of('button "Frame button cross"'), selector="#fout")
+        check("get_text in cross-origin frame", not err and out.strip().endswith("cross clicked 1") and "[in frame f" in out, out)
+
+        err, out = call("click", tab_id=tab_id, text="Frame button leaf")
+        check("click by text finds nested frame", not err and '"frame": "f' in out, out)
+        err, out = call("get_text", tab_id=tab_id, frame=frame_of('button "Frame button leaf"'), selector="#fout")
+        check("nested frame received click", out.strip().endswith("leaf clicked 1"), out)
+
+        fref = ref_for('textbox "Field same"')
+        err, out = call("type", tab_id=tab_id, ref=fref, text="inside a frame")
+        check("type into frame field", not err and "inside a frame" in out, out)
+
+        err, out = call("find", tab_id=tab_id, query="Frame button")
+        check("find searches every frame", not err and out.count("Frame button") >= 3 and "[frame f" in out, out)
+
+        err, out = call("evaluate", tab_id=tab_id, frame=frame_of('button "Frame button cross"'), code="document.title")
+        check("evaluate in a frame", not err and "Frame cross" in out, out)
+
+        # coordinate click that lands inside the same-origin iframe
+        err, shot = call("screenshot", tab_id=tab_id, max_width=4000, save=False)
+        img_w = json.loads(shot.split("\n", 1)[1])["width"]
+        err, out = call("evaluate", tab_id=tab_id, code="(() => { const f = document.getElementById('same'); f.scrollIntoView({block:'center'}); const r = f.getBoundingClientRect(); return {l: r.left + f.clientLeft, t: r.top + f.clientTop, w: innerWidth}; })()")
+        fr = json.loads(out)["value"]
+        err, out = call("evaluate", tab_id=tab_id, frame=frame_of('button "Frame button same"'),
+                        code="(() => { const r = document.getElementById('fb').getBoundingClientRect(); return {x: r.left + r.width/2, y: r.top + r.height/2}; })()")
+        bt = json.loads(out)["value"]
+        err, shot = call("screenshot", tab_id=tab_id, max_width=4000, save=False)  # re-shoot after scroll
+        k = img_w / fr["w"]
+        err, out = call("click", tab_id=tab_id, x=(fr["l"] + bt["x"]) * k, y=(fr["t"] + bt["y"]) * k)
+        check("coordinate click descends into iframe", not err and "Frame button same" in out and '"frame": "f' in out, out)
+
+        err, out = call("click", tab_id=tab_id, text="Shadow button")
+        check("click inside closed shadow root", not err and "Shadow button" in out, out)
+        err, out = call("find", tab_id=tab_id, query="shadow clicked")
+        check("closed shadow root content readable", not err and "shadow clicked" in out, out)
+
     err, out = call("click", tab_id=tab_id, text="Second page")
     check("click link navigates", not err and "second=1" in out, out)
     err, out = call("navigate", tab_id=tab_id, action="back")

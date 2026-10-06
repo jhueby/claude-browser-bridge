@@ -196,27 +196,150 @@ function waitForLoad(tabId, action, timeout = 15000) {
   });
 }
 
-async function agent(tab, op, args) {
+// ------------------------------------------------------------------ frames
+// Frame 0 is the top document. Elements inside iframe N get refs "fN:e7". Site rules apply to
+// every frame on its own URL (and its ancestors'), so e.g. a blocked payment iframe embedded in
+// an allowed page stays untouchable.
+
+async function frameTable(tabId) {
+  const list = (await browser.webNavigation.getAllFrames({ tabId })) || [];
+  const byId = new Map(list.map((f) => [f.frameId, f]));
+  // about:blank / srcdoc frames run with their parent's origin, so judge them by the parent's URL.
+  const effUrl = (f) => {
+    let cur = f;
+    while (cur && /^(about:(blank|srcdoc)|javascript:)/.test(cur.url || "") && cur.parentFrameId >= 0) cur = byId.get(cur.parentFrameId);
+    return cur?.url || f.url;
+  };
+  const denied = (id) => {
+    for (let f = byId.get(id); f; f = f.parentFrameId >= 0 ? byId.get(f.parentFrameId) : null) {
+      const why = siteDenied(effUrl(f), settings);
+      if (why) return why;
+    }
+    return null;
+  };
+  return { list, byId, effUrl, denied };
+}
+
+async function checkFrame(tab, frameId, ft) {
+  if (!frameId) return;
+  ft = ft || await frameTable(tab.id);
+  const f = ft.byId.get(frameId);
+  if (!f) throw new Error(`frame f${frameId} no longer exists in this tab — take a new snapshot`);
+  const why = ft.denied(frameId);
+  if (why) throw new Error(`Not allowed: that iframe is ${why}. Ask the user to do this step themselves or change the bridge's site settings.`);
+  if (!/^(https?|file|about|data):/.test(ft.effUrl(f))) throw new Error(`Can't script frame f${frameId} (${f.url}).`);
+}
+
+// Pull a frame out of a "fN:eM" ref or a `frame` argument ("f12" or 12). Returns null frameId if none given.
+function routeFrame(args) {
+  const a = { ...args };
+  let frameId = null;
+  const m = typeof a.ref === "string" && a.ref.match(/^f(\d+):(e\d+)$/);
+  if (m) { frameId = Number(m[1]); a.ref = m[2]; }
+  if (a.frame != null && a.frame !== "") {
+    const id = Number(String(a.frame).replace(/^f/, ""));
+    if (!Number.isInteger(id) || id < 0) throw new Error(`bad frame "${a.frame}" — use the fN shown in snapshot`);
+    if (frameId != null && id !== frameId) throw new Error(`ref ${args.ref} is in frame f${frameId}, not ${a.frame}`);
+    frameId = id;
+  }
+  delete a.frame;
+  return { frameId, a };
+}
+
+const prefixFor = (frameId) => (frameId ? `f${frameId}:` : "");
+
+async function agent(tab, op, args, frameId = 0) {
   assertScriptable(tab);
   assertUrlAllowed(tab.url);
-  await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ["agent.js"] });
+  await checkFrame(tab, frameId);
+  const target = { tabId: tab.id, frameIds: [frameId] };
+  await browser.scripting.executeScript({ target, files: ["agent.js"] });
   const [r] = await browser.scripting.executeScript({
-    target: { tabId: tab.id },
+    target,
     func: (o, a) => window.__cbbAgent(o, a),
-    args: [op, args],
+    args: [op, { ...args, prefix: prefixFor(frameId) }],
   });
   const out = r?.result;
-  if (!out) throw new Error(r?.error?.message || "page agent returned nothing (page navigating?)");
+  if (!out) throw new Error(r?.error?.message || `page agent returned nothing${frameId ? ` in frame f${frameId}` : ""} (navigating, or a sandboxed frame?)`);
   if (!out.ok) throw new Error(out.error);
   return out.value;
 }
 
-async function mainWorld(tab, func, args = []) {
+async function mainWorld(tab, func, args = [], frameId = 0) {
   assertScriptable(tab);
   assertUrlAllowed(tab.url);
-  const [r] = await browser.scripting.executeScript({ target: { tabId: tab.id }, world: "MAIN", func, args });
+  await checkFrame(tab, frameId);
+  const [r] = await browser.scripting.executeScript({ target: { tabId: tab.id, frameIds: [frameId] }, world: "MAIN", func, args });
   if (r?.error) throw new Error(String(r.error.message || r.error));
   return r?.result;
+}
+
+// Snapshot a frame and, recursively, the iframes inside it, indenting each child under its <iframe> line.
+async function snapshotTree(tab, frameId, opts, ft, depth = 0, budget = { left: opts.max_items ?? 300 }) {
+  const pad = "  ".repeat(depth);
+  const snap = await agent(tab, "snapshot", { max_items: Math.max(1, budget.left) }, frameId);
+  budget.left -= snap.lines.length;
+  const after = new Map();
+  for (const fr of snap.frames) (after.get(fr.after) || after.set(fr.after, []).get(fr.after)).push(fr);
+  const out = [];
+  for (let i = 0; i < snap.lines.length; i++) {
+    out.push(pad + snap.lines[i]);
+    for (const fr of after.get(i) || []) {
+      const label = `${pad}  [frame f${fr.frameId}]`;
+      if (opts.include_frames === false) { out.push(`${label} (not expanded; snapshot with frame="f${fr.frameId}")`); continue; }
+      const f = ft.byId.get(fr.frameId);
+      if (fr.frameId < 0 || !f) { out.push(`${pad}  [frame not reachable]`); continue; }
+      const why = ft.denied(fr.frameId);
+      if (why) { out.push(`${label} hidden by site rules`); continue; }
+      if (depth >= 4) { out.push(`${label} ${f.url} (nested too deep; snapshot with frame="f${fr.frameId}")`); continue; }
+      if (budget.left <= 0) { out.push(`${label} ${f.url} (item budget used up; snapshot with frame="f${fr.frameId}")`); continue; }
+      try {
+        const child = await snapshotTree(tab, fr.frameId, opts, ft, depth + 1, budget);
+        out.push(`${label} ${f.url}`, ...child.lines);
+      } catch (e) {
+        out.push(`${label} ${f.url} — can't read: ${String(e?.message || e)}`);
+      }
+    }
+  }
+  return { head: snap.head, lines: out };
+}
+
+// Run an element op in the given frame. With no frame given, try the top document first and,
+// if a selector/text target isn't there, look for it in each allowed iframe.
+async function inFrameOrSearch(tab, op, a, frameId) {
+  if (frameId != null) return followFocus(tab, op, a, frameId);
+  try {
+    return await followFocus(tab, op, a, 0);
+  } catch (e) {
+    const notFound = /^(no visible element with text|no element matches selector)/.test(String(e?.message));
+    if (!notFound || a.ref) throw e;
+    const ft = await frameTable(tab.id);
+    for (const f of await childFrames(tab, ft)) {
+      try {
+        const r = await agent(tab, op, a, f.frameId);
+        return { ...r, frame: `f${f.frameId}` };
+      } catch { /* not in this frame either */ }
+    }
+    throw e;
+  }
+}
+
+// type/press_key with no target act on the focused element; if focus is inside an iframe the
+// agent answers {focusIn: frameId} and we follow it down.
+async function followFocus(tab, op, a, frameId) {
+  let fid = frameId;
+  for (let hop = 0; hop < 6; hop++) {
+    const r = await agent(tab, op, a, fid);
+    if (r?.focusIn == null) return fid ? { ...r, frame: `f${fid}` } : r;
+    if (r.focusIn < 0) throw new Error("focus is inside an iframe the extension can't reach");
+    fid = r.focusIn;
+  }
+  throw new Error("focus is nested too deeply in iframes");
+}
+
+// Allowed, scriptable child frames (frame 0 excluded), in document order as Firefox lists them.
+async function childFrames(tab, ft) {
+  return ft.list.filter((f) => f.frameId !== 0 && !ft.denied(f.frameId) && /^(https?|file|about):/.test(ft.effUrl(f)));
 }
 
 async function afterAction(tabId) {
@@ -320,42 +443,93 @@ async function execute(tool, args, entry) {
     }
 
     case "click": {
-      const a = { ...args };
+      const { frameId, a } = routeFrame(args);
       if (a.x != null && a.y != null && !a.ref && !a.selector && !a.text) {
-        const s = shotScale[tab.id] ?? 1;
-        a.x *= s; a.y *= s;
+        // Without `frame`, x/y are screenshot pixels; with it, CSS pixels in that frame's viewport.
+        if (frameId == null) { const s = shotScale[tab.id] ?? 1; a.x *= s; a.y *= s; }
+        let fid = frameId ?? 0, r;
+        for (let hop = 0; hop < 6; hop++) {
+          r = await agent(tab, "click", a, fid);
+          if (!r.descend) break;
+          if (r.descend.frameId < 0) throw new Error("that point is inside an iframe the extension can't reach");
+          fid = r.descend.frameId; a.x = r.descend.x; a.y = r.descend.y;
+        }
+        if (r.descend) throw new Error("iframes nested too deeply at that point");
+        return { ...r, ...(fid ? { frame: `f${fid}` } : {}), page: await afterAction(tab.id) };
       }
-      const r = await agent(tab, "click", a);
+      const r = await inFrameOrSearch(tab, "click", a, frameId);
       return { ...r, page: await afterAction(tab.id) };
     }
 
     case "type":
     case "press_key":
     case "select_option": {
-      const r = await agent(tab, tool, args);
+      const { frameId, a } = routeFrame(args);
+      const r = await inFrameOrSearch(tab, tool, a, frameId);
       return { ...r, page: await afterAction(tab.id) };
     }
 
-    case "snapshot":
-    case "get_text":
-    case "find":
     case "hover":
     case "scroll":
-    case "wait_for":
-      return agent(tab, tool, args);
+    case "get_text": {
+      const { frameId, a } = routeFrame(args);
+      const targeted = a.ref || a.selector || a.text;
+      return targeted ? inFrameOrSearch(tab, tool, a, frameId) : agent(tab, tool, a, frameId ?? 0);
+    }
+
+    case "wait_for": {
+      const { frameId, a } = routeFrame(args);
+      return agent(tab, tool, a, frameId ?? 0);
+    }
+
+    case "snapshot": {
+      const { frameId } = routeFrame(args);
+      const ft = await frameTable(tab.id);
+      const snap = await snapshotTree(tab, frameId ?? 0, args, ft);
+      const nFrames = ft.list.length - 1;
+      const foot = nFrames > 0 ? `\n(${nFrames} iframe${nFrames > 1 ? "s" : ""} in this tab; refs like f12:e3 point inside them)` : "";
+      return { text: `${snap.head}\n${snap.lines.join("\n")}${foot}` };
+    }
+
+    case "find": {
+      const { frameId, a } = routeFrame(args);
+      const limit = a.limit ?? 20;
+      const ft = await frameTable(tab.id);
+      const frames = frameId != null ? [frameId] : [0, ...(await childFrames(tab, ft)).map((f) => f.frameId)];
+      const out = [];
+      let more = 0;
+      for (const fid of frames) {
+        if (out.length >= limit) { more++; continue; }
+        try {
+          const r = await agent(tab, "find", { ...a, limit: limit - out.length }, fid);
+          if (r.lines.length && fid) out.push(`[frame f${fid}] ${ft.byId.get(fid)?.url || ""}`);
+          out.push(...r.lines.map((l) => (fid ? "  " + l : l)));
+          more += r.more;
+        } catch (e) {
+          if (frameId != null) throw e; // explicit frame: report; otherwise skip unreadable frames
+        }
+      }
+      if (!out.length) return { text: `no matches for ${a.css ? "selector" : "text"} "${a.query}"` };
+      if (more) out.push(`… more matches not shown (raise limit or narrow the query)`);
+      return { text: out.join("\n") };
+    }
 
     case "evaluate": {
-      const r = await mainWorld(tab, evalInPage, [args.code]);
+      const { frameId } = routeFrame(args);
+      const r = await mainWorld(tab, evalInPage, [args.code], frameId ?? 0);
       if (!r || !r.ok) throw new Error(r?.error || "evaluation failed (page CSP may forbid eval)");
       return { value: r.value };
     }
 
-    case "logs_start":
-      return mainWorld(tab, startLogCapture);
+    case "logs_start": {
+      const { frameId } = routeFrame(args);
+      return mainWorld(tab, startLogCapture, [], frameId ?? 0);
+    }
 
     case "logs_read": {
-      const r = await mainWorld(tab, readLogs, [args.kind || "all", !!args.errors_only, !!args.clear]);
-      if (!r) throw new Error("not capturing in this tab — call logs_start first (capture resets on navigation)");
+      const { frameId } = routeFrame(args);
+      const r = await mainWorld(tab, readLogs, [args.kind || "all", !!args.errors_only, !!args.clear], frameId ?? 0);
+      if (!r) throw new Error("not capturing in this frame — call logs_start first (capture resets on navigation)");
       return r;
     }
 
