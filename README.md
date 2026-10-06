@@ -56,6 +56,8 @@ python native/install.py
 
 Firefox launches `native/host.py` through its standard native-messaging mechanism, and only for this extension's ID. The host reads `~/.claude-browser-bridge/token`, so the extension pairs itself: no token to paste, and if the token is ever rotated, it re-fetches it. On Windows this writes one key, `HKCU\Software\Mozilla\NativeMessagingHosts\claude_browser_bridge`. `python native/install.py --remove` undoes it.
 
+Run it from your own terminal. Sandboxed agent shells, including Claude Code's tool sandbox on Windows, can virtualize registry writes: the install appears to succeed, but your real Firefox then reports "No such native application claude_browser_bridge".
+
 **3. Install the extension permanently.** Firefox release builds only keep signed add-ons, so sign it **unlisted** with your own free AMO account. This produces a private `.xpi` that Mozilla signs and never publishes:
 
 1. Create API keys at <https://addons.mozilla.org/developers/addon/api/key/>.
