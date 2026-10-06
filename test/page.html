@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Bridge Test Page</title></head>
+<body>
+  <h1>Bridge test</h1>
+  <form id="f" onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'submitted:' + this.q.value + ':' + this.color.value;">
+    <label for="q">Search</label> <input id="q" name="q" placeholder="type here">
+    <label for="pw">Password</label> <input id="pw" type="password">
+    <select name="color" aria-label="Color"><option value="r">Red</option><option value="g">Green</option></select>
+    <button type="submit">Go</button>
+  </form>
+  <button id="inc" onclick="this.dataset.n = (+this.dataset.n || 0) + 1; this.textContent = 'Count ' + this.dataset.n; console.log('clicked', this.dataset.n); fetch('/page.html?ping=' + this.dataset.n);">Count 0</button>
+  <p id="out"></p>
+  <button onclick="setTimeout(() => { const d = document.createElement('div'); d.id = 'late'; d.textContent = 'Late arrival'; document.body.append(d); }, 800)">Spawn later</button>
+  <a href="/page.html?second=1">Second page</a>
+</body>
+</html>
