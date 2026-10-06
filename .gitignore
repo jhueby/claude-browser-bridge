@@ -4,3 +4,4 @@ extension/pairing.json
 web-ext-artifacts/
 *.xpi
 dist/
+extension/.amo-upload-uuid
