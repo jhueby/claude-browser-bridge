@@ -7,7 +7,7 @@ const READ_ONLY_OK = new Set(["tabs_list", "tab_focus", "screenshot", "snapshot"
   "hover", "scroll", "wait_for", "logs_start", "logs_read"]);
 const NO_PAGE = new Set(["tabs_list", "tab_open", "tab_close", "tab_focus", "reload_matching"]);
 
-const settings = { token: "", paused: false, readOnly: false, blocked: [], allowed: [] };
+const settings = { token: "", tokenSource: "", paused: false, readOnly: false, blocked: [], allowed: [] };
 const sessions = {};          // port -> { up, error, pid, cwd, since, count, lastTool, lastAt }
 const cutPids = new Set();    // bridge PIDs the user disconnected from the popup (until "Reconnect")
 const activity = [];          // recent commands, newest first
@@ -23,12 +23,31 @@ async function loadSettings() {
     // Optional: a locally built copy may ship pairing.json (gitignored) to skip the paste step.
     try {
       const p = await (await fetch(browser.runtime.getURL("pairing.json"))).json();
-      const seed = { ...(p.settings || {}), ...(p.token ? { token: p.token } : {}) };
+      const seed = { ...(p.settings || {}), ...(p.token ? { token: p.token, tokenSource: "pairing" } : {}) };
       Object.assign(settings, seed);
       await browser.storage.local.set(seed);
     } catch { /* not present */ }
   }
+  if (!settings.token) await tokenFromNativeHost();
   updateBadge();
+}
+
+// Native messaging: Firefox launches native/host.py (registered by native/install.py, allowed
+// only for this extension's ID), which reads ~/.claude-browser-bridge/token. No pasting needed.
+let lastNativeTry = 0;
+async function tokenFromNativeHost() {
+  if (Date.now() - lastNativeTry < 30000) return false;
+  lastNativeTry = Date.now();
+  try {
+    const r = await browser.runtime.sendNativeMessage("claude_browser_bridge", { type: "token" });
+    if (!r?.token || r.token === settings.token) return false;
+    settings.token = r.token;
+    settings.tokenSource = "native";
+    await browser.storage.local.set({ token: r.token, tokenSource: "native" });
+    return true;
+  } catch {
+    return false; // host not installed: fall back to the pasted token
+  }
 }
 
 browser.storage.onChanged.addListener((changes) => {
@@ -64,7 +83,13 @@ async function pollLoop(port) {
       await sleep(3000);
       continue;
     }
-    if (r.status === 401) { setSession(port, { up: false, error: "token rejected — re-pair" }); await sleep(5000); continue; }
+    if (r.status === 401) {
+      // Token may have been rotated; re-read it through the native host (never for test-seeded tokens).
+      if (settings.tokenSource !== "pairing" && await tokenFromNativeHost()) continue;
+      setSession(port, { up: false, error: "token rejected — re-pair" });
+      await sleep(5000);
+      continue;
+    }
     if (!r.ok && r.status !== 204) { await sleep(2000); continue; }
     // Learn which process is on this port before serving it, so a disconnected session can't
     // slip a command through (a stale pid fails closed: it stays refused until hello updates it).

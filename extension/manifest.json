@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "name": "Claude Browser Bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Lets your local Claude Code sessions drive Firefox through a loopback-only MCP bridge. No remote servers, no auto-update URL.",
-  "permissions": ["tabs", "scripting", "storage", "<all_urls>"],
+  "permissions": ["tabs", "scripting", "storage", "nativeMessaging", "<all_urls>"],
   "background": {
     "scripts": ["guards.js", "background.js"],
     "persistent": true

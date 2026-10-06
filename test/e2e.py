@@ -3,6 +3,8 @@
     python test/e2e.py [--firefox PATH] [--allowlist]
 
 --allowlist seeds allowed=["127.0.0.1"] and adds checks that other hosts are refused/hidden.
+--native seeds no token and starts paused, then checks (via the popup) that the installed
+  native host (python native/install.py) paired the extension automatically.
 
 Needs Node (npx web-ext). Uses an isolated BRIDGE_HOME so your real token is untouched.
 """
@@ -24,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ap = argparse.ArgumentParser()
 ap.add_argument("--firefox", default=r"C:\Program Files\Mozilla Firefox\firefox.exe" if os.name == "nt" else "firefox")
 ap.add_argument("--allowlist", action="store_true")
+ap.add_argument("--native", action="store_true",
+                help="no seeded token: the extension must pair itself via the installed native host")
 opts = ap.parse_args()
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -60,7 +64,12 @@ for _ in range(50):
 # 3. extension copy with pairing.json, launched in a temp profile
 ext = work / "ext"
 shutil.copytree(ROOT / "extension", ext)
-seed = {"token": token, **({"settings": {"allowed": ["127.0.0.1"]}} if opts.allowlist else {})}
+if opts.native:
+    # Firefox doesn't pass our BRIDGE_HOME to the native host, so the host serves the user's REAL
+    # token. Start paused so this throwaway browser can never take commands from real sessions.
+    seed = {"settings": {"paused": True}}
+else:
+    seed = {"token": token, **({"settings": {"allowed": ["127.0.0.1"]}} if opts.allowlist else {})}
 (ext / "pairing.json").write_text(json.dumps(seed))
 npx = "npx.cmd" if os.name == "nt" else "npx"
 MARIONETTE = 28282
@@ -184,6 +193,23 @@ try:
     check("initialize", init["result"]["serverInfo"]["name"] == "claude-browser-bridge")
     tools = rpc("tools/list")["result"]["tools"]
     check("tools/list", len(tools) >= 20, str(len(tools)))
+
+    if opts.native:
+        mn = Marionette(MARIONETTE)
+        mn.open_extension_page("claude-browser-bridge@jhueby", "popup.html")
+        state = ""
+        for _ in range(20):
+            state = mn.text("#tokenState")
+            if "native" in state:
+                break
+            time.sleep(0.5)
+        check("native host paired the extension automatically", "native host" in state, state)
+        real = (Path.home() / ".claude-browser-bridge" / "token").read_text().strip()
+        page_text = mn.cmd("WebDriver:GetPageSource")["value"]
+        check("popup never displays the token", real not in page_text, "token visible in popup")
+        check("stays paused (no polling with the real token)", mn.cmd("WebDriver:ExecuteScript", {
+            "script": "return document.getElementById('paused').checked", "args": []})["value"] is True, "not paused")
+        raise SystemExit(0 if not failures else 1)
 
     # wait for Firefox + extension to connect and the page to load
     tab_id = None

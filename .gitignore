@@ -3,3 +3,4 @@ __pycache__/
 extension/pairing.json
 web-ext-artifacts/
 *.xpi
+dist/

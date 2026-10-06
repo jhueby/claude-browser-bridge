@@ -34,9 +34,10 @@
     <div id="sessionMsg" class="bad"></div>
   </section>
   <section>
-    <div><b>Pairing token</b> <span class="muted">— run <code>python bridge.py --token</code></span></div>
+    <div><b>Pairing</b> <span id="tokenState" class="muted"></span></div>
+    <div class="muted">Automatic once <code>python native/install.py</code> has run. Otherwise paste the output of <code>python server/bridge.py --token</code>:</div>
     <input type="password" id="token" placeholder="paste token">
-    <button id="saveToken">Save</button> <span id="tokenState" class="muted"></span>
+    <button id="saveToken">Save</button>
   </section>
   <section>
     <div><b>Allowed sites</b> <span id="allowState" class="muted"></span></div>

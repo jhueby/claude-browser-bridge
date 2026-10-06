@@ -40,7 +40,7 @@ Each Claude Code session spawns its own `bridge.py`, which binds the first free 
 
 ## Install
 
-Requirements: Python 3.9+ and Firefox 142+.
+Requirements: Python 3.9+, Firefox 142+, and Node (only to sign the extension).
 
 **1. Register the MCP server with Claude Code** (user scope, so every project gets it):
 
@@ -48,22 +48,31 @@ Requirements: Python 3.9+ and Firefox 142+.
 claude mcp add --scope user browser-bridge -- python /path/to/claude-browser-bridge/server/bridge.py
 ```
 
-**2. Load the extension.** Pick one:
-
-- *Quick (until Firefox restarts):* open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on…**, and pick `extension/manifest.json`.
-- *Permanent:* Firefox release builds only install signed add-ons. Sign it **unlisted** with your own free AMO account, which gives a private `.xpi` that is never published:
-  ```bash
-  npx web-ext sign --source-dir extension --channel unlisted --api-key $AMO_JWT_ISSUER --api-secret $AMO_JWT_SECRET
-  ```
-  Then drag the `.xpi` from `web-ext-artifacts/` into Firefox. (Developer Edition, Nightly, or ESR with `xpinstall.signatures.required=false` can install it unsigned instead.)
-
-**3. Pair:**
+**2. Install the native pairing host** (once, per user, no admin rights):
 
 ```bash
-python server/bridge.py --token
+python native/install.py
 ```
 
-Paste the output into the extension popup and click **Save**. The badge then shows the number of connected Claude sessions: orange for full control, blue for read-only, `II` when paused, and red `!` while unpaired.
+Firefox launches `native/host.py` through its standard native-messaging mechanism, and only for this extension's ID. The host reads `~/.claude-browser-bridge/token`, so the extension pairs itself: no token to paste, and if the token is ever rotated, it re-fetches it. On Windows this writes one key, `HKCU\Software\Mozilla\NativeMessagingHosts\claude_browser_bridge`. `python native/install.py --remove` undoes it.
+
+**3. Install the extension permanently.** Firefox release builds only keep signed add-ons, so sign it **unlisted** with your own free AMO account. This produces a private `.xpi` that Mozilla signs and never publishes:
+
+1. Create API keys at <https://addons.mozilla.org/developers/addon/api/key/>.
+2. Save them to `~/.claude-browser-bridge/amo.json` as `{"issuer": "user:…", "secret": "…"}`, or set `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`.
+3. Run:
+   ```bash
+   python scripts/sign.py --install
+   ```
+   Firefox shows its normal add-on prompt; click **Add**. It now survives restarts, like any other extension.
+
+When you change the extension later, run `python scripts/sign.py --bump --install`. AMO never signs the same version twice.
+
+*Quick alternative (until Firefox restarts):* go to `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on…**, and pick `extension/manifest.json`.
+
+*No native host?* Pair by hand instead: run `python server/bridge.py --token` and paste the output into the popup.
+
+The badge shows the number of connected Claude sessions: orange for full control, blue for read-only, `II` when paused, and red `!` while unpaired.
 
 ## Using it
 
@@ -97,13 +106,17 @@ server/bridge.py         MCP stdio server + loopback HTTP endpoint
 extension/background.js  polling, tab control, tool dispatch, session controls
 extension/guards.js      allowlist/blocklist matching (shared with the unit test)
 extension/agent.js       on-demand page agent (snapshot, refs, click/type/...)
-extension/popup.*        status, pause, read-only, token, blocklist, activity
+extension/popup.*        status, pause, read-only, sessions, pairing, site lists, activity
+native/host.py           native-messaging host: hands the token to the extension
+native/install.py        registers/removes the native host (per user)
+scripts/sign.py          unlisted AMO signing -> permanent .xpi
 test/e2e.py              real Firefox (throwaway profile) end-to-end test; --allowlist for the allowlist suite;
                          drives the real popup over Marionette to test Disconnect/Reconnect/Kill
 test/test_security.py    endpoint hardening checks
 test/test_guards.js      site-rule unit tests (node)
+test/test_native.py      native host protocol test
 ```
 
-Run tests with `node test/test_guards.js`, `python test/test_security.py`, `python test/e2e.py`, and `python test/e2e.py --allowlist`. Set `BRIDGE_DEBUG=1` to log every HTTP request the bridge receives to stderr. The e2e test needs Node for `npx web-ext`; it uses a temporary profile and token and leaves your real setup alone.
+Run tests with `node test/test_guards.js`, `python test/test_security.py`, `python test/e2e.py`, `python test/e2e.py --allowlist`, `python test/test_native.py`, and `python test/e2e.py --native` (checks auto-pairing; the test browser stays paused because it receives your real token). Set `BRIDGE_DEBUG=1` to log every HTTP request the bridge receives to stderr. The e2e test needs Node for `npx web-ext`; it uses a temporary profile and token and leaves your real setup alone.
 
 ~/.claude-browser-bridge/ holds `token`, `audit.log` (JSONL of every call, with typed text redacted), and `screenshots/`.

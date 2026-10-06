@@ -93,7 +93,8 @@ async function render(first) {
     $("blocked").value = (settings.blocked || []).join("\n");
     $("allowed").value = (settings.allowed || []).join("\n");
   }
-  $("tokenState").textContent = settings.token ? "paired" : "not paired";
+  $("tokenState").textContent = !settings.token ? "not paired"
+    : settings.tokenSource === "native" ? "paired automatically (native host)" : "paired";
   const allowOn = (settings.allowed || []).some((p) => p.trim() && !p.trim().startsWith("#"));
   $("allowState").textContent = allowOn ? "— ON (restricted)" : "— off";
   $("allowState").className = allowOn ? "ok" : "muted";
@@ -113,7 +114,7 @@ async function render(first) {
 
 $("paused").onchange = (e) => save({ paused: e.target.checked });
 $("readOnly").onchange = (e) => save({ readOnly: e.target.checked });
-$("saveToken").onclick = async () => { await save({ token: $("token").value.trim() }); $("token").value = ""; render(); };
+$("saveToken").onclick = async () => { await save({ token: $("token").value.trim(), tokenSource: "manual" }); $("token").value = ""; render(); };
 const lines = (id) => $(id).value.split("\n").map((s) => s.trim()).filter(Boolean);
 $("saveBlocked").onclick = () => save({ blocked: lines("blocked") }).then(() => render());
 $("saveAllowed").onclick = () => save({ allowed: lines("allowed") }).then(() => render());

@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 PORT_RANGE = range(int(os.environ.get("BRIDGE_PORT_START", "8777")), int(os.environ.get("BRIDGE_PORT_START", "8777")) + 10)
 HOME = Path(os.environ.get("BRIDGE_HOME", Path.home() / ".claude-browser-bridge"))
 TOKEN_FILE = HOME / "token"
