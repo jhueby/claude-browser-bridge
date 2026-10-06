@@ -54,6 +54,17 @@ try:
                                                      json.dumps({"id": "1", "ok": True})), 401)
     check("extension origin + token", req("GET", "/hello", {**good, "Origin": "moz-extension://abc"}), 200)
     check("no origin + token", req("GET", "/hello", good), 200)
+    check("shutdown without token", req("POST", "/shutdown", {}, json.dumps({"pid": proc.pid})), 401)
+    check("shutdown from a web origin", req("POST", "/shutdown", {**good, "Origin": "https://evil.example"},
+                                            json.dumps({"pid": proc.pid})), 403)
+    check("shutdown with stale pid refused", req("POST", "/shutdown", good, json.dumps({"pid": 1})), 409)
+    check("bridge still alive after refused shutdowns", proc.poll(), None)
+    check("shutdown with token + matching pid", req("POST", "/shutdown", good, json.dumps({"pid": proc.pid})), 200)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    check("bridge exited", proc.poll() is not None, True)
 finally:
     proc.terminate()
 

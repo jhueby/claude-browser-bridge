@@ -13,5 +13,7 @@
   <p id="out"></p>
   <button onclick="setTimeout(() => { const d = document.createElement('div'); d.id = 'late'; d.textContent = 'Late arrival'; document.body.append(d); }, 800)">Spawn later</button>
   <a href="/page.html?second=1">Second page</a>
+  <a id="other" href="#">Other host</a>
+  <script>document.getElementById("other").href = location.href.replace("127.0.0.1", "localhost").split("?")[0];</script>
 </body>
 </html>

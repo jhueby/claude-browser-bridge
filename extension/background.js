@@ -7,8 +7,9 @@ const READ_ONLY_OK = new Set(["tabs_list", "tab_focus", "screenshot", "snapshot"
   "hover", "scroll", "wait_for", "logs_start", "logs_read"]);
 const NO_PAGE = new Set(["tabs_list", "tab_open", "tab_close", "tab_focus", "reload_matching"]);
 
-const settings = { token: "", paused: false, readOnly: false, blocked: [] };
-const sessions = {};          // port -> { up, error, pid, cwd, since }
+const settings = { token: "", paused: false, readOnly: false, blocked: [], allowed: [] };
+const sessions = {};          // port -> { up, error, pid, cwd, since, count, lastTool, lastAt }
+const cutPids = new Set();    // bridge PIDs the user disconnected from the popup (until "Reconnect")
 const activity = [];          // recent commands, newest first
 const shotScale = {};         // tabId -> viewport CSS px per screenshot px
 
@@ -22,7 +23,9 @@ async function loadSettings() {
     // Optional: a locally built copy may ship pairing.json (gitignored) to skip the paste step.
     try {
       const p = await (await fetch(browser.runtime.getURL("pairing.json"))).json();
-      if (p.token) { settings.token = p.token; await browser.storage.local.set({ token: p.token }); }
+      const seed = { ...(p.settings || {}), ...(p.token ? { token: p.token } : {}) };
+      Object.assign(settings, seed);
+      await browser.storage.local.set(seed);
     } catch { /* not present */ }
   }
   updateBadge();
@@ -34,7 +37,7 @@ browser.storage.onChanged.addListener((changes) => {
 });
 
 function updateBadge() {
-  const up = Object.values(sessions).filter((s) => s.up).length;
+  const up = Object.values(sessions).filter((s) => s.up && !cutPids.has(s.pid)).length;
   let text = "", color = "#6b7280";
   if (!settings.token) { text = "!"; color = "#dc2626"; }
   else if (settings.paused) { text = "II"; }
@@ -42,7 +45,8 @@ function updateBadge() {
   browser.browserAction.setBadgeText({ text });
   browser.browserAction.setBadgeBackgroundColor({ color });
   browser.browserAction.setTitle({
-    title: `Claude Browser Bridge — ${settings.paused ? "paused" : `${up} session(s) connected`}${settings.readOnly ? " (read-only)" : ""}`,
+    title: `Claude Browser Bridge — ${settings.paused ? "paused" : `${up} session(s) connected`}` +
+      `${settings.readOnly ? " (read-only)" : ""}${activeRules(settings.allowed) ? " (allowlist on)" : ""}`,
   });
 }
 
@@ -62,7 +66,9 @@ async function pollLoop(port) {
     }
     if (r.status === 401) { setSession(port, { up: false, error: "token rejected — re-pair" }); await sleep(5000); continue; }
     if (!r.ok && r.status !== 204) { await sleep(2000); continue; }
-    if (!sessions[port]?.up) hello(base, port);
+    // Learn which process is on this port before serving it, so a disconnected session can't
+    // slip a command through (a stale pid fails closed: it stays refused until hello updates it).
+    if (!sessions[port]?.up) await hello(base, port);
     setSession(port, { up: true, error: null });
     if (r.status === 204) continue;
     const cmd = await r.json();
@@ -73,7 +79,7 @@ async function pollLoop(port) {
 async function hello(base, port) {
   try {
     const h = await (await fetch(`${base}/hello`, { headers: { "X-Bridge-Token": settings.token } })).json();
-    setSession(port, { pid: h.pid, cwd: h.cwd, since: Date.now() });
+    if (h.pid !== sessions[port]?.pid) setSession(port, { pid: h.pid, cwd: h.cwd, since: Date.now(), count: 0, lastTool: null, lastAt: null });
   } catch { /* ignore */ }
 }
 
@@ -84,11 +90,17 @@ function setSession(port, patch) {
 }
 
 async function handle(base, cmd) {
-  const entry = { t: Date.now(), tool: cmd.tool, port: base.split(":").pop(), ok: null, url: "" };
+  const port = base.split(":").pop();
+  const s = sessions[port] || {};
+  const entry = { t: Date.now(), tool: cmd.tool, port, pid: s.pid, ok: null, url: "" };
   activity.unshift(entry);
   activity.length = Math.min(activity.length, 30);
+  setSession(port, { count: (s.count || 0) + 1, lastTool: cmd.tool, lastAt: entry.t });
   let res;
   try {
+    if (cutPids.has(s.pid))
+      throw new Error("The user disconnected this Claude Code session from Firefox (Claude Browser Bridge popup). " +
+                      "Stop using the browser tools; ask the user to click Reconnect if they want you back in.");
     const result = await execute(cmd.tool, cmd.args || {}, entry);
     res = { id: cmd.id, ok: true, result };
     entry.ok = true;
@@ -107,21 +119,19 @@ async function handle(base, cmd) {
 
 // ------------------------------------------------------------------ guards
 
-function hostBlocked(url) {
-  let host;
-  try { host = new URL(url).hostname.toLowerCase(); } catch { return null; }
-  for (const raw of settings.blocked || []) {
-    const p = raw.trim().toLowerCase();
-    if (!p || p.startsWith("#")) continue;
-    const re = new RegExp("^" + p.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$");
-    if (re.test(host) || host.endsWith("." + p)) return raw.trim();
-  }
-  return null;
+// siteDenied/activeRules come from guards.js (loaded first by the manifest).
+function assertUrlAllowed(url) {
+  const why = url && siteDenied(url, settings);
+  if (why) throw new Error(`Not allowed: ${why}. Ask the user to do this step themselves or change the bridge's site settings.`);
 }
 
-function assertUrlAllowed(url) {
-  const hit = url && hostBlocked(url);
-  if (hit) throw new Error(`Blocked by the user's Claude Browser Bridge settings (${hit}). Ask the user to do this step themselves.`);
+const tabVisible = (t) => !siteDenied(t.url || "about:blank", settings);
+const FRESH_TAB = /^about:(blank|newtab|home)$/;
+
+async function getTabById(id) {
+  const t = await browser.tabs.get(id);
+  assertUrlAllowed(t.url);
+  return t;
 }
 
 function assertScriptable(tab) {
@@ -199,11 +209,17 @@ async function execute(tool, args, entry) {
     throw new Error(`Claude Browser Bridge is in read-only mode; "${tool}" is not allowed. Ask the user to switch it off.`);
 
   const tab = NO_PAGE.has(tool) ? null : await getTab(args);
-  if (tab) entry.url = tab.url;
+  if (tab) {
+    entry.url = tab.url;
+    // The tab itself must be in bounds; only a blank/new tab may be navigated somewhere allowed.
+    if (!(tool === "navigate" && FRESH_TAB.test(tab.url || ""))) assertUrlAllowed(tab.url || "about:blank");
+  }
 
   switch (tool) {
     case "tabs_list":
-      return { tabs: (await browser.tabs.query({})).map(tabInfo) };
+      const all = await browser.tabs.query({});
+      const shown = all.filter(tabVisible);
+      return { tabs: shown.map(tabInfo), ...(shown.length < all.length ? { hidden_by_site_rules: all.length - shown.length } : {}) };
 
     case "tab_open": {
       if (args.url) assertUrlAllowed(args.url);
@@ -217,10 +233,12 @@ async function execute(tool, args, entry) {
     }
 
     case "tab_close":
+      await getTabById(args.tab_id);
       await browser.tabs.remove(args.tab_id);
       return { closed: args.tab_id };
 
     case "tab_focus": {
+      await getTabById(args.tab_id);
       const t = await browser.tabs.update(args.tab_id, { active: true });
       await browser.windows.update(t.windowId, { focused: true });
       return tabInfo(t);
@@ -243,7 +261,7 @@ async function execute(tool, args, entry) {
     }
 
     case "reload_matching": {
-      const tabs = (await browser.tabs.query({})).filter((t) => (t.url || "").includes(args.url_contains));
+      const tabs = (await browser.tabs.query({})).filter((t) => (t.url || "").includes(args.url_contains) && !siteDenied(t.url, settings));
       await Promise.all(tabs.map((t) => browser.tabs.reload(t.id, { bypassCache: args.hard !== false })));
       return { reloaded: tabs.map((t) => ({ id: t.id, url: t.url })) };
     }
@@ -386,7 +404,33 @@ function readLogs(kind, errorsOnly, clear) {
 // ------------------------------------------------------------------ popup messaging
 
 browser.runtime.onMessage.addListener(async (msg) => {
-  if (msg.type === "state") return { settings, sessions, activity };
+  if (msg.type === "state") {
+    const view = {};
+    for (const [port, s] of Object.entries(sessions)) view[port] = { ...s, disconnected: cutPids.has(s.pid) };
+    return { settings, sessions: view, activity };
+  }
+  if (msg.type === "disconnect" || msg.type === "reconnect") {
+    const pid = sessions[msg.port]?.pid;
+    if (pid == null) return { ok: false, error: "unknown session" };
+    msg.type === "disconnect" ? cutPids.add(pid) : cutPids.delete(pid);
+    updateBadge();
+    return { ok: true };
+  }
+  if (msg.type === "kill") {
+    const s = sessions[msg.port];
+    if (!s?.up) return { ok: false, error: "session not connected" };
+    try {
+      const r = await fetch(`http://127.0.0.1:${msg.port}/shutdown`, {
+        method: "POST",
+        headers: { "X-Bridge-Token": settings.token, "Content-Type": "application/json" },
+        body: JSON.stringify({ pid: s.pid }),
+      });
+      if (!r.ok) return { ok: false, error: `bridge said ${r.status}` };
+    } catch (e) { return { ok: false, error: String(e) }; }
+    cutPids.delete(s.pid);
+    setSession(msg.port, { up: false, error: null, pid: null });
+    return { ok: true };
+  }
   if (msg.type === "save") { await browser.storage.local.set(msg.patch); return { ok: true }; }
 });
 

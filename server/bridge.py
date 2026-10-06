@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 PORT_RANGE = range(int(os.environ.get("BRIDGE_PORT_START", "8777")), int(os.environ.get("BRIDGE_PORT_START", "8777")) + 10)
 HOME = Path(os.environ.get("BRIDGE_HOME", Path.home() / ".claude-browser-bridge"))
 TOKEN_FILE = HOME / "token"
@@ -42,6 +42,7 @@ SHOT_DIR = HOME / "screenshots"
 POLL_WAIT = 20.0          # seconds a /poll request is held open
 EXTENSION_GRACE = 8.0     # how long a tool call waits for an extension to show up
 DEFAULT_TIMEOUT = 30.0
+DEBUG = bool(os.environ.get("BRIDGE_DEBUG"))
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
 
@@ -173,6 +174,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _reply(self, code: int, body: dict | None = None) -> None:
         data = b"" if body is None else json.dumps(body).encode()
+        if DEBUG:
+            log(f"{self.command} {self.path} -> {code} origin={self.headers.get('Origin')}")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -227,17 +230,47 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/result"):
             self._reply(200, {"accepted": BROKER.deliver(body)})
+        elif self.path.startswith("/shutdown"):
+            # Sent by the extension popup's "Kill" button. The pid check stops a stale click
+            # from killing a newer session that has since taken over this port.
+            if body.get("pid") != os.getpid():
+                self._reply(409, {"error": "pid mismatch", "pid": os.getpid()})
+                return
+            audit("killed", by="extension popup")
+            log("shut down by the user from the Firefox extension")
+            self._reply(200, {"bye": os.getpid()})
+            threading.Timer(0.2, lambda: os._exit(0)).start()
         else:
             self._reply(404, {"error": "not found"})
+
+
+class ExclusiveServer(ThreadingHTTPServer):
+    """Refuse to share a port. http.server sets SO_REUSEADDR, which on Windows lets a second
+    process bind a port that is already listening — two sessions would silently split traffic
+    (or another program could squat on ours). Use SO_EXCLUSIVEADDRUSE there instead."""
+
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+    def server_bind(self):
+        if os.name == "nt":
+            import socket
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+    def handle_error(self, request, client_address):
+        # Browsers drop long-polls when tabs/windows close; that's not worth a traceback on stderr.
+        if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            super().handle_error(request, client_address)
 
 
 def start_http() -> int:
     for port in PORT_RANGE:
         try:
-            srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+            srv = ExclusiveServer(("127.0.0.1", port), Handler)
         except OSError:
             continue
-        srv.daemon_threads = True
+
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         return port
     raise SystemExit(f"[bridge] no free port in {PORT_RANGE.start}-{PORT_RANGE.stop - 1}")

@@ -17,6 +17,9 @@
     ul { list-style:none; padding:0; margin:0; max-height:160px; overflow:auto; }
     li { padding:2px 0; font-size:12px; word-break:break-all; }
     code { font-size:11px; }
+    li.session { border:1px solid var(--line); border-radius:6px; padding:6px; margin:4px 0; }
+    li.session button { margin:4px 4px 0 0; padding:2px 8px; font-size:12px; }
+    #sessions { max-height:220px; }
   </style>
 </head>
 <body>
@@ -28,6 +31,7 @@
   <section>
     <div><b>Sessions</b></div>
     <ul id="sessions"></ul>
+    <div id="sessionMsg" class="bad"></div>
   </section>
   <section>
     <div><b>Pairing token</b> <span class="muted">— run <code>python bridge.py --token</code></span></div>
@@ -35,7 +39,13 @@
     <button id="saveToken">Save</button> <span id="tokenState" class="muted"></span>
   </section>
   <section>
-    <div><b>Blocked sites</b> <span class="muted">— one host per line, * wildcards, subdomains included</span></div>
+    <div><b>Allowed sites</b> <span id="allowState" class="muted"></span></div>
+    <div class="muted">If any are listed, Claude can <i>only</i> touch these sites; other tabs are hidden from it. Leave empty to allow everything not blocked.</div>
+    <textarea id="allowed" placeholder="localhost&#10;127.0.0.1&#10;*.tryhackme.com"></textarea>
+    <button id="saveAllowed">Save</button>
+  </section>
+  <section>
+    <div><b>Blocked sites</b> <span class="muted">— always wins over the allowlist. One host per line, * wildcards, subdomains included</span></div>
     <textarea id="blocked" placeholder="mybank.com&#10;*.paypal.com&#10;mail.google.com"></textarea>
     <button id="saveBlocked">Save</button>
   </section>

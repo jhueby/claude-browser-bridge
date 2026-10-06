@@ -14,9 +14,10 @@ This extension gives a local AI agent your browser, including your logged-in ses
 | Silent updates by an upstream author | No `update_url`. The code you load is the code you read. |
 | Dependency supply chain | The server is stdlib-only; the extension has no third-party code. |
 | The agent typing your passwords | `type` refuses `input[type=password]`. Snapshots show `<hidden>` for password values. |
-| The agent on sites you care about | Blocked-sites list (hosts, `*` wildcards, subdomains included), checked before any script runs and before navigation. |
+| The agent on sites you care about | **Allowlist**: when set, only listed hosts can be read, scripted, screenshotted, focused, closed, or navigated to. Off-list tabs are hidden from `tabs_list`, and a tab that wanders off-list (link click, redirect) is refused from then on, including `back`. **Blocklist** always wins. Checked on the tab's current URL and on every navigation target. |
 | Wanting to watch, not act | Read-only mode allows only observation tools. |
-| Wanting it to stop now | Pause disconnects every session immediately; in-flight commands are refused. |
+| Wanting it to stop now | Pause disconnects every session immediately; in-flight commands are refused. Per session, **Disconnect** refuses one session's commands, and **Kill** ends its bridge process. The kill request carries the target PID, so a stale click can't kill a newer session that has since taken over the same port. |
+| Port sharing on Windows | `http.server` normally sets `SO_REUSEADDR`, which on Windows lets a second process bind a port that is already listening. The bridge binds with `SO_EXCLUSIVEADDRUSE` instead, so a second bridge (or a squatter) can't silently share its port. |
 | After-the-fact review | `~/.claude-browser-bridge/audit.log` records every call with timestamp, PID, and arguments (typed text redacted); the popup shows the last 30 actions. |
 
 ## Not defended
