@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 PORT_RANGE = range(int(os.environ.get("BRIDGE_PORT_START", "8777")), int(os.environ.get("BRIDGE_PORT_START", "8777")) + 10)
 HOME = Path(os.environ.get("BRIDGE_HOME", Path.home() / ".claude-browser-bridge"))
 TOKEN_FILE = HOME / "token"
@@ -341,7 +341,7 @@ TOOLS: list[dict] = [
      "inputSchema": _obj({**TAB, **FRAME, "selector": TARGET["selector"], "text": TARGET["text"],
                           "gone": {"type": "boolean", "default": False},
                           "timeout_ms": {"type": "integer", "default": 10000}})},
-    {"name": "evaluate", "description": "Run JavaScript in the page (main world). Expression or function body; may use await; return value is JSON-serialised. Subject to the page's CSP.",
+    {"name": "evaluate", "description": "Run JavaScript in the page (main world). Expression or function body; may use await; return value is JSON-serialised. Subject to the page's CSP. Off unless the user ticks 'Allow evaluate' in the extension popup.",
      "inputSchema": _obj({**TAB, **FRAME, "code": {"type": "string"}}, ["code"])},
     {"name": "logs_start", "description": "Start capturing console messages and fetch/XHR requests in a tab or one of its iframes (resets on navigation).",
      "inputSchema": _obj({**TAB, **FRAME})},

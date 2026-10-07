@@ -2,10 +2,12 @@
 """Sign the extension as an UNLISTED (private) add-on with your own AMO account, so Firefox
 installs it permanently. Nothing is published on addons.mozilla.org.
 
-    python scripts/sign.py [--bump] [--install]
+    python scripts/sign.py [--bump] [--install] [--listed]
 
   --bump     bump the patch version first (AMO rejects re-signing a version it has seen)
   --install  open the signed .xpi in Firefox afterwards (you click "Add" once)
+  --listed   submit to the PUBLIC addons.mozilla.org listing instead (uses store/amo-metadata.json;
+             goes to Mozilla's human review, so no .xpi comes back right away)
 
 API keys (create once at https://addons.mozilla.org/developers/addon/api/key/) come from
 AMO_JWT_ISSUER / AMO_JWT_SECRET, or from ~/.claude-browser-bridge/amo.json:
@@ -56,12 +58,22 @@ def main() -> None:
     DIST.mkdir(exist_ok=True)
     env = {**os.environ, "WEB_EXT_API_KEY": issuer, "WEB_EXT_API_SECRET": secret}
     npx = "npx.cmd" if os.name == "nt" else "npx"
-    print(f"signing v{version} (unlisted) — AMO's automated review usually takes a minute or two…")
-    r = subprocess.run([npx, "--yes", "web-ext", "sign", "--channel", "unlisted",
-                        "--source-dir", str(ROOT / "extension"), "--artifacts-dir", str(DIST),
-                        "--ignore-files", "pairing.json"], env=env)
+    listed = "--listed" in sys.argv
+    cmd = [npx, "--yes", "web-ext", "sign", "--channel", "listed" if listed else "unlisted",
+           "--source-dir", str(ROOT / "extension"), "--artifacts-dir", str(DIST),
+           "--ignore-files", "pairing.json", ".amo-upload-uuid"]
+    if listed:
+        cmd += ["--amo-metadata", str(ROOT / "store" / "amo-metadata.json"), "--approval-timeout", "0"]
+        print(f"submitting v{version} to the public listing — Mozilla reviews it by hand (hours to days)…")
+    else:
+        print(f"signing v{version} (unlisted) — AMO's automated review usually takes a minute or two…")
+    r = subprocess.run(cmd, env=env)
     if r.returncode:
         sys.exit("web-ext sign failed (if AMO says the version exists, rerun with --bump)")
+    if listed:
+        print("Submitted. Track review at https://addons.mozilla.org/developers/addons — once approved, "
+              "Firefox users can install it from the public listing.")
+        return
     xpis = sorted(DIST.glob(f"*{version}*.xpi"), key=lambda p: p.stat().st_mtime)
     if not xpis:
         sys.exit(f"signed, but no .xpi for v{version} found in {DIST}")

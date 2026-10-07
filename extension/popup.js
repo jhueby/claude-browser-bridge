@@ -92,6 +92,7 @@ async function render(first) {
   if (first) {
     $("paused").checked = settings.paused;
     $("readOnly").checked = settings.readOnly;
+    $("allowEvaluate").checked = !!settings.allowEvaluate;
     $("blocked").value = (settings.blocked || []).join("\n");
     $("allowed").value = (settings.allowed || []).join("\n");
   }
@@ -116,6 +117,7 @@ async function render(first) {
 
 $("paused").onchange = (e) => save({ paused: e.target.checked });
 $("readOnly").onchange = (e) => save({ readOnly: e.target.checked });
+$("allowEvaluate").onchange = (e) => save({ allowEvaluate: e.target.checked });
 $("pairNow").onclick = async () => { await browser.runtime.sendMessage({ type: "pairNow" }); render(); };
 $("saveToken").onclick = async () => { await save({ token: $("token").value.trim(), tokenSource: "manual" }); $("token").value = ""; render(); };
 const lines = (id) => $(id).value.split("\n").map((s) => s.trim()).filter(Boolean);

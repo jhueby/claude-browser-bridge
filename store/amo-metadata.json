@@ -1,0 +1,19 @@
+{
+  "categories": ["web-development"],
+  "summary": {
+    "en-US": "Unofficial (not affiliated with Anthropic). Let your local Claude Code sessions drive Firefox through a loopback-only MCP bridge, with allowlists, read-only mode and per-session controls."
+  },
+  "description": {
+    "en-US": "Claude Browser Bridge connects Firefox to Claude Code (or any MCP client) running on the same computer, so an agent can read and work in your real browser: list tabs, take screenshots, outline a page, click, type, fill forms, wait for elements, read console and network logs, and reach into iframes and shadow DOM.\n\nThis is an independent, unofficial project. It is not made, endorsed or supported by Anthropic.\n\nIt needs the companion bridge server (a single stdlib-only Python file) from the project's GitHub repository; on its own the add-on does nothing.\n\nPrivacy and safety:\n- Talks only to 127.0.0.1. No remote servers, no analytics, no data collection.\n- Pairs with the local bridge through a token, read automatically via Firefox native messaging.\n- Allowed-sites and blocked-sites lists, enforced per tab and per iframe.\n- Read-only mode, a pause switch, and per-session Disconnect/Kill.\n- Refuses to type into password fields.\n- The evaluate tool (run JavaScript in a page) is off until you turn it on.\n- A local audit log records every command.\n\nSetup instructions, source code and the threat model: https://github.com/jhueby/claude-browser-bridge"
+  },
+  "homepage": {
+    "url": { "en-US": "https://github.com/jhueby/claude-browser-bridge" }
+  },
+  "support_url": {
+    "url": { "en-US": "https://github.com/jhueby/claude-browser-bridge/issues" }
+  },
+  "version": {
+    "license": "MIT",
+    "approval_notes": "All code is plain, unminified JavaScript with no third-party libraries; nothing is fetched remotely. The add-on only makes requests to http://127.0.0.1:8777-8786, where a companion local MCP server runs (source: https://github.com/jhueby/claude-browser-bridge, server/bridge.py). nativeMessaging is used only to read the local pairing token (native/host.py in the same repo). The two Function-constructor uses (background.js evalInPage) implement the user-facing 'evaluate' tool: it runs code the user's local agent sends, in the page's main world via scripting.executeScript, is disabled by default, and is enabled only by a checkbox in the popup. To test: install the add-on, run 'python server/bridge.py' as an MCP server in Claude Code (README), and use the tools; without the local server the add-on is idle."
+  }
+}

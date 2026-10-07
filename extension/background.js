@@ -7,7 +7,7 @@ const READ_ONLY_OK = new Set(["tabs_list", "tab_focus", "screenshot", "snapshot"
   "hover", "scroll", "wait_for", "logs_start", "logs_read"]);
 const NO_PAGE = new Set(["tabs_list", "tab_open", "tab_close", "tab_focus", "reload_matching"]);
 
-const settings = { token: "", tokenSource: "", paused: false, readOnly: false, blocked: [], allowed: [] };
+const settings = { token: "", tokenSource: "", paused: false, readOnly: false, allowEvaluate: false, blocked: [], allowed: [] };
 const sessions = {};          // port -> { up, error, pid, cwd, since, count, lastTool, lastAt }
 const cutPids = new Set();    // bridge PIDs the user disconnected from the popup (until "Reconnect")
 const activity = [];          // recent commands, newest first
@@ -515,6 +515,9 @@ async function execute(tool, args, entry) {
     }
 
     case "evaluate": {
+      if (!settings.allowEvaluate)
+        throw new Error("The evaluate tool (run JavaScript in the page) is turned off in the Claude Browser Bridge popup. " +
+                        "Use snapshot/find/get_text instead, or ask the user to tick \"Allow evaluate\".");
       const { frameId } = routeFrame(args);
       const r = await mainWorld(tab, evalInPage, [args.code], frameId ?? 0);
       if (!r || !r.ok) throw new Error(r?.error || "evaluation failed (page CSP may forbid eval)");

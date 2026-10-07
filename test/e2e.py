@@ -69,10 +69,14 @@ if opts.native:
     # token. Start paused so this throwaway browser can never take commands from real sessions.
     seed = {"settings": {"paused": True}}
 else:
-    seed = {"token": token, **({"settings": {"allowed": ["127.0.0.1"]}} if opts.allowlist else {})}
+    seed = {"token": token, "settings": {"allowEvaluate": True, **({"allowed": ["127.0.0.1"]} if opts.allowlist else {})}}
 (ext / "pairing.json").write_text(json.dumps(seed))
 npx = "npx.cmd" if os.name == "nt" else "npx"
 MARIONETTE = 28282
+# A Firefox left over from an earlier (killed) run would answer on this port and we'd test the wrong browser.
+with socket.socket() as _s:
+    if _s.connect_ex(("127.0.0.1", MARIONETTE)) == 0:
+        sys.exit(f"port {MARIONETTE} is already in use — a test Firefox from an earlier run is probably still open; close it first")
 # Prefs go through a config file: npx.cmd runs via cmd.exe, which mangles quoting on the command line.
 cfg = work / "web-ext-config.cjs"
 cfg.write_text("module.exports = " + json.dumps({"run": {"pref": [
@@ -86,8 +90,8 @@ fx = subprocess.Popen([npx, "--yes", "web-ext", "run", "--config", str(cfg), "--
 class Marionette:
     """Just enough of Firefox's Marionette protocol (len:json framing) to click popup buttons."""
 
-    def __init__(self, port):
-        for _ in range(60):
+    def __init__(self, port, tries=60):
+        for _ in range(tries):
             try:
                 self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
                 break
@@ -158,6 +162,7 @@ class Marionette:
                 time.sleep(0.3)
 
 ids = iter(range(1, 10**6))
+mn = None  # Marionette connection, if a test opened one; used to quit Firefox cleanly at the end
 
 
 def rpc(method, params=None, proc=None):
@@ -207,6 +212,8 @@ try:
         real = (Path.home() / ".claude-browser-bridge" / "token").read_text().strip()
         page_text = mn.cmd("WebDriver:GetPageSource")["value"]
         check("popup never displays the token", real not in page_text, "token visible in popup")
+        check("evaluate is off by default on a fresh install", mn.cmd("WebDriver:ExecuteScript", {
+            "script": "return document.getElementById('allowEvaluate').checked", "args": []})["value"] is False, "checked")
         check("stays paused (no polling with the real token)", mn.cmd("WebDriver:ExecuteScript", {
             "script": "return document.getElementById('paused').checked", "args": []})["value"] is True, "not paused")
         raise SystemExit(0 if not failures else 1)
@@ -390,6 +397,17 @@ try:
     check("popup lists both sessions with port/pid/count", f"port {port1}" in shown and f"port {port2}" in shown
           and f"pid {bridge2.pid}" in shown and "cmds" in shown, shown)
 
+    # (in --allowlist mode the main test tab has wandered off-list by now, so use a fresh allowed tab)
+    etab = json.loads(call("tab_open", url=page, active=False)[1])["id"] if opts.allowlist else tab_id
+    mn.click("//input[@id='allowEvaluate']")  # untick
+    time.sleep(0.5)
+    err, out = call("evaluate", tab_id=etab, code="1 + 1")
+    check("popup: unticking Allow evaluate blocks evaluate", err and "turned off" in out, out)
+    mn.click("//input[@id='allowEvaluate']")  # tick again
+    time.sleep(0.5)
+    err, out = call("evaluate", tab_id=etab, code="1 + 1")
+    check("popup: ticking Allow evaluate re-enables it", not err and "2" in out, out)
+
     mn.click(row(port1) + "//button[.='Disconnect']")
     time.sleep(0.5)
     err, out = call("tabs_list")
@@ -422,6 +440,10 @@ try:
     audit = (home / "audit.log").read_text()
     check("audit log redacts typed text", "hello world" not in audit and "secret" not in audit and '"tool": "type"' in audit, audit[-500:])
 finally:
+    try:
+        (mn or Marionette(MARIONETTE, tries=3)).cmd("Marionette:Quit", {"flags": ["eForceQuit"]})
+    except Exception:
+        pass
     bridge.stdin.close()
     bridge.terminate()
     if os.name == "nt":

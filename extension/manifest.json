@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "Claude Browser Bridge",
-  "version": "0.4.0",
-  "description": "Lets your local Claude Code sessions drive Firefox through a loopback-only MCP bridge. No remote servers, no auto-update URL.",
+  "version": "0.4.1",
+  "description": "Unofficial (not affiliated with Anthropic). Lets local Claude Code sessions drive Firefox through a loopback-only MCP bridge. No remote servers.",
   "permissions": ["tabs", "scripting", "storage", "nativeMessaging", "webNavigation", "<all_urls>"],
   "background": {
     "scripts": ["guards.js", "background.js"],

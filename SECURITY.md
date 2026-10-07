@@ -24,5 +24,5 @@ This extension gives a local AI agent your browser, including your logged-in ses
 
 - **Prompt injection.** A page can contain text addressed to Claude. The bridge can't tell good instructions from bad ones; that's Claude's job and yours. Use the blocklist for sensitive sites and read-only mode when you only need to look.
 - **Malware running as your user.** It can read the token file and drive the bridge, or just read your Firefox profile directly. Same-user isolation is out of scope.
-- **`evaluate`.** This runs arbitrary JS in the page, by design. Disable the tool in Claude Code's permissions if you don't want it.
+- **`evaluate`.** This runs arbitrary JS in the page, by design. It is **off by default** and only works after you tick *Allow evaluate* in the popup. You can also deny the tool in Claude Code's permissions.
 - **Port squatting.** If another local process binds 8777-8786 before the bridge, the extension would send it your token and accept commands from it. This needs local code execution, which is covered above.

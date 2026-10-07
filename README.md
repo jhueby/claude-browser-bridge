@@ -2,6 +2,8 @@
 
 Let [Claude Code](https://claude.com/claude-code) drive your **real Firefox**, including your logged-in sessions, through an MCP server that only listens on loopback.
 
+> **Unofficial.** This is an independent project. It is not made, endorsed or supported by Anthropic. "Claude" is a trademark of Anthropic.
+
 It's a small clean-room rewrite of the idea behind `nanogenomic/ClaudeCodeBrowser`. No code was copied. The goal is a version you can read end to end in one sitting:
 
 | Part | Design |
@@ -34,7 +36,7 @@ Each Claude Code session spawns its own `bridge.py`, which binds the first free 
 | `find`, `get_text` | locate elements by text or CSS, across the page and its iframes; read visible text |
 | `click`, `type`, `press_key`, `select_option`, `hover`, `scroll` | act on a ref, selector, text, or screenshot coordinate; a ref carries its frame, and text/selector targets missing from the top page are looked up in iframes |
 | `wait_for` | wait for a selector or text to appear or disappear |
-| `evaluate` | run JS in the page's main world, or in one iframe with `frame` (expression or function body, `await` allowed) |
+| `evaluate` | run JS in the page's main world, or in one iframe with `frame` (expression or function body, `await` allowed). **Off by default:** tick *Allow evaluate* in the popup to enable it |
 | `logs_start`, `logs_read` | capture console messages and fetch/XHR traffic in a tab or one of its iframes |
 | `bridge_status` | connection state and file locations |
 
@@ -58,7 +60,9 @@ Firefox launches `native/host.py` through its standard native-messaging mechanis
 
 Run it from your own terminal. Sandboxed agent shells, including Claude Code's tool sandbox on Windows, can virtualize registry writes: the install appears to succeed, but your real Firefox then reports "No such native application claude_browser_bridge".
 
-**3. Install the extension permanently.** Firefox release builds only keep signed add-ons, so sign it **unlisted** with your own free AMO account. This produces a private `.xpi` that Mozilla signs and never publishes:
+**3. Install the extension.** Once it passes Mozilla's review, the easiest route is the public listing on addons.mozilla.org: search for "Claude Browser Bridge" and click *Add to Firefox*.
+
+To build your own copy instead, note that Firefox release builds only keep signed add-ons, so sign it **unlisted** with your own free AMO account. This produces a private `.xpi` that Mozilla signs and never publishes:
 
 1. Create API keys at <https://addons.mozilla.org/developers/addon/api/key/>.
 2. Save them to `~/.claude-browser-bridge/amo.json` as `{"issuer": "user:…", "secret": "…"}`, or set `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`.
